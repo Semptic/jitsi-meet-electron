@@ -24,6 +24,7 @@ import * as path from 'path';
 import * as URL from 'url';
 
 import config from './app/features/config';
+import { setupMultitrackRecordingMain } from './app/features/multitrack-recording/main';
 import { openExternalLink } from './app/features/utils/openExternalLink';
 import { t } from './app/i18n/main';
 import pkgJson from './package.json';
@@ -633,6 +634,7 @@ ipcMain.on('open-meeting-window', (event, conference) => {
     initPopupsConfigurationMain(meetingWindow, windowOpenHandler);
     setupPictureInPictureMain(meetingWindow);
     setupPowerMonitorMain(meetingWindow);
+    setupMultitrackRecordingMain(meetingWindow);
     setupScreenSharingMain(meetingWindow, config.appName, pkgJson.build.appId);
     setupRemoteControlMain(meetingWindow, { requestConsent: requestRemoteControlConsent });
 

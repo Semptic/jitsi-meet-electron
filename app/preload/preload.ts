@@ -18,6 +18,22 @@ const whitelistedIpcChannels = [
 ipcRenderer.setMaxListeners(0);
 
 /**
+ * Multitrack recording: lets the meeting window write per-participant audio
+ * files into a folder the user picked in a native dialog. The channel names
+ * are inlined (not imported) to keep the preload free of app imports.
+ */
+const multitrack = {
+    chooseDirectory: (): Promise<{ name: string; token: string; } | null> =>
+        ipcRenderer.invoke('multitrack:choose-directory'),
+    openFile: (token: string, name: string): Promise<{ fileId: string; }> =>
+        ipcRenderer.invoke('multitrack:open-file', token, name),
+    write: (fileId: string, data: ArrayBuffer, position?: number): Promise<{ size: number; }> =>
+        ipcRenderer.invoke('multitrack:write', fileId, data, position),
+    close: (fileId: string): Promise<void> => ipcRenderer.invoke('multitrack:close', fileId),
+    abort: (fileId: string): Promise<void> => ipcRenderer.invoke('multitrack:abort', fileId)
+};
+
+/**
  * Open an external URL.
  *
  * @param {string} url - The URL we with to open.
@@ -33,6 +49,7 @@ function openExternalLink(url: string): void {
 // return), which contextBridge supports, so it works under contextIsolation.
 contextBridge.exposeInMainWorld('jitsiElectronApp', {
     openExternalLink,
+    multitrack,
     ipc: {
         addListener: (channel: string, listener: (...args: any[]) => void) => {
             if (!whitelistedIpcChannels.includes(channel)) {

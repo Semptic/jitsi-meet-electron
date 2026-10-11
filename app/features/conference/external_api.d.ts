@@ -7,6 +7,7 @@ declare class JitsiMeetExternalAPI {
     constructor(domain: string, options?: any);
     on(event: string, listener: (...args: any[]) => void): void;
     dispose(): void;
+    getIFrame(): HTMLIFrameElement;
 }
 
 export default JitsiMeetExternalAPI;

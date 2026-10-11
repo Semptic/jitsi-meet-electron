@@ -14,6 +14,7 @@
     "type-check": "tsc --noEmit",
     "build": "npm run type-check && node ./esbuild.js",
     "dist": "npm run build && electron-builder",
+    "test:multitrack": "node ./esbuild.js && node ./test/multitrack/run.js",
     "postinstall": "patch-package",
     "watch": "node ./esbuild.js renderer --dev --watch"
   },

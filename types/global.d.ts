@@ -9,6 +9,13 @@ interface IJitsiElectronApp {
         addListener(channel: string, listener: (...args: any[]) => void): (() => void) | undefined;
         send(channel: string, ...args: any[]): void;
     };
+    multitrack: {
+        abort(fileId: string): Promise<void>;
+        chooseDirectory(): Promise<{ name: string; token: string; } | null>;
+        close(fileId: string): Promise<void>;
+        openFile(token: string, name: string): Promise<{ fileId: string; }>;
+        write(fileId: string, data: ArrayBuffer, position?: number): Promise<{ size: number; }>;
+    };
     openExternalLink(url: string): void;
 }
 

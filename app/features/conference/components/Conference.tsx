@@ -13,6 +13,7 @@ import { Dispatch } from 'redux';
 import i18n from '../../../i18n';
 import type { IConference, IState } from '../../../types';
 import config from '../../config';
+import { setupMultitrackRecordingRender } from '../../multitrack-recording/renderer';
 import { getSetting } from '../../settings';
 import Spinner from '../../shared/components/Spinner';
 import { parseURLParams } from '../../utils/parseURLParams';
@@ -216,6 +217,7 @@ class Conference extends Component<IProps, IConferenceState> {
             setupPictureInPictureRender(this._api);
         }
         setupPowerMonitorRender(this._api);
+        setupMultitrackRecordingRender(this._api);
     }
 
     /**
