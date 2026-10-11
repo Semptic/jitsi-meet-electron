@@ -446,6 +446,9 @@ app.on('certificate-error',
 app.on('ready', createJitsiMeetWindow);
 
 if (isDev) {
+    // The certificate-error event above is not emitted for every connection (e.g. WebSockets), which breaks
+    // joining a meeting through a dev server with a self-signed certificate. Only unpackaged builds do this.
+    app.commandLine.appendSwitch('ignore-certificate-errors');
     app.on('ready', createWebRTCInternalsWindow);
 }
 
