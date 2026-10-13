@@ -11,3 +11,5 @@ dist/
 
 app/features/conference/external_api.js
 
+client-bundle/
+dist-multitrack/
