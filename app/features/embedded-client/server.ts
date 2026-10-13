@@ -7,10 +7,10 @@ import * as path from 'node:path';
 
 
 import { LOOPBACK_HOST, TOKEN_HEADER } from './constants';
+import { createGuardedAgent } from './dnsGuard';
+import { embeddedHostName } from './hosts';
 import {
     classifyPath,
-    cookiePrefix,
-    filterRequestCookies,
     isAllowedHost,
     isAllowedOrigin,
     parseRequestTarget,
@@ -49,6 +49,11 @@ export interface IEmbeddedServerOptions {
     token: string;
 
     /**
+     * Skips the DNS guard (tests with a loopback fake upstream only; never set in the app).
+     */
+    unsafeAllowLoopbackForTests?: boolean;
+
+    /**
      * The one origin (scheme://host[:port]) this server forwards to.
      */
     upstreamOrigin: string;
@@ -56,6 +61,7 @@ export interface IEmbeddedServerOptions {
 
 export interface IEmbeddedServer {
     close: () => Promise<void>;
+    host: string;
     origin: string;
     port: number;
 }
@@ -126,8 +132,8 @@ function tokenMatches(presented: string | string[] | undefined, expected: string
  */
 export async function createEmbeddedServer(options: IEmbeddedServerOptions): Promise<IEmbeddedServer> {
     const { bundleDir, onLog = () => undefined, preferredPort, token, upstreamOrigin } = options;
+    const hostName = embeddedHostName(upstreamOrigin);
     const root = fs.realpathSync(path.resolve(bundleDir));
-    const prefix = cookiePrefix(upstreamOrigin);
     const sockets = new Set<Socket>();
     let port = 0;
     let serverOrigin = '';
@@ -138,7 +144,11 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
         secure: true,
         followRedirects: false,
         xfwd: false,
-        ws: true
+        ws: true,
+
+        // Long polling (BOSH) answers within about a minute; WebSockets are not subject to this.
+        proxyTimeout: 120_000,
+        agent: options.unsafeAllowLoopbackForTests ? undefined : createGuardedAgent()
     });
 
     proxy.on('proxyRes', proxyRes => {
@@ -151,7 +161,7 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
         const cookies = proxyRes.headers['set-cookie'];
 
         if (cookies) {
-            proxyRes.headers['set-cookie'] = cookies.map(cookie => rewriteSetCookie(cookie, prefix));
+            proxyRes.headers['set-cookie'] = cookies.map(rewriteSetCookie);
         }
     });
 
@@ -181,7 +191,7 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
             return { refused: true,
                 status: 400 };
         }
-        if (!isAllowedHost(req.headers.host, port)) {
+        if (!isAllowedHost(req.headers.host, hostName, port)) {
             return { refused: true,
                 status: 403 };
         }
@@ -205,7 +215,7 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
      * @returns {void}
      */
     const prepareForUpstream = (req: http.IncomingMessage) => {
-        const { origin, referer, cookie } = req.headers;
+        const { origin, referer } = req.headers;
 
         for (const name of STRIPPED_REQUEST_HEADERS) {
             delete req.headers[name];
@@ -221,14 +231,6 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
             req.headers.referer = newReferer;
         } else {
             delete req.headers.referer;
-        }
-
-        const newCookie = filterRequestCookies(cookie, prefix);
-
-        if (newCookie) {
-            req.headers.cookie = newCookie;
-        } else {
-            delete req.headers.cookie;
         }
     };
 
@@ -297,7 +299,8 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
         }
     };
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer({ headersTimeout: 30_000,
+        requestTimeout: 120_000 }, (req, res) => {
         const verdict = guard(req, false);
 
         if (verdict.refused) {
@@ -378,10 +381,11 @@ export async function createEmbeddedServer(options: IEmbeddedServerOptions): Pro
     }
 
     port = (server.address() as AddressInfo).port;
-    serverOrigin = `http://${LOOPBACK_HOST}:${port}`;
+    serverOrigin = `http://${hostName}:${port}`;
 
     return {
         origin: serverOrigin,
+        host: hostName,
         port,
         close: () => new Promise<void>(resolve => {
             proxy.close();

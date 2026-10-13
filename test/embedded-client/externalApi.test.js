@@ -45,11 +45,14 @@ describe('external_api.js patch', () => {
         assert.equal(urlFor('meet.jit.si'), 'https://meet.jit.si/#jitsi_meet_external_api_id=ID');
         assert.equal(urlFor('meet.example.com/tenant'),
             'https://meet.example.com/tenant/#jitsi_meet_external_api_id=ID');
-        assert.equal(urlFor('http://127.0.0.1:5123'), 'http://127.0.0.1:5123/#jitsi_meet_external_api_id=ID');
-        assert.equal(urlFor('http://127.0.0.1:5123/tenant'),
-            'http://127.0.0.1:5123/tenant/#jitsi_meet_external_api_id=ID');
-        for (const evil of [ 'http://127.0.0.1.evil.example:80', 'http://evil.example', 'http://localhost:5123',
-            'http://127.0.0.1', 'http://127.0.0.1:5123@evil.example' ]) {
+        assert.equal(urlFor('http://abcdef0123456789.localhost:5123'),
+            'http://abcdef0123456789.localhost:5123/#jitsi_meet_external_api_id=ID');
+        assert.equal(urlFor('http://abcdef0123456789.localhost:5123/tenant'),
+            'http://abcdef0123456789.localhost:5123/tenant/#jitsi_meet_external_api_id=ID');
+        for (const evil of [ 'http://127.0.0.1:5123', 'http://abcdef0123456789.localhost.evil.example:80',
+            'http://evil.example', 'http://localhost:5123', 'http://abcdef0123456789.localhost',
+            'http://abcdef0123456789.localhost:5123@evil.example', 'http://ABCDEF0123456789.localhost:5123',
+            'http://abcdef.localhost:5123' ]) {
             assert.ok(urlFor(evil).startsWith('https://'), evil);
         }
     });

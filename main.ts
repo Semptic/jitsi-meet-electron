@@ -24,7 +24,6 @@ import * as path from 'path';
 import * as URL from 'url';
 
 import config from './app/features/config';
-import { LOOPBACK_HOST } from './app/features/embedded-client/constants';
 import { setupEmbeddedClientMain } from './app/features/embedded-client/main';
 import { setupMultitrackRecordingMain } from './app/features/multitrack-recording/main';
 import { openExternalLink } from './app/features/utils/openExternalLink';
@@ -281,7 +280,7 @@ function createJitsiMeetWindow() {
     // Block access to file:// URLs and give the meeting window's requests to its
     // embedded client server the per-launch token.
     const requestFilter = {
-        urls: [ 'file://*', `http://${LOOPBACK_HOST}:*/*`, `ws://${LOOPBACK_HOST}:*/*` ]
+        urls: [ 'file://*', 'http://*.localhost:*/*', 'ws://*.localhost:*/*' ]
     };
 
     mainWindow.webContents.session.webRequest.onBeforeSendHeaders(requestFilter, (details, callback) => {
@@ -366,6 +365,10 @@ function createJitsiMeetWindow() {
 
         callback(loopbackVerdict ?? true);
     });
+
+    // Permission checks (not only requests) follow the same rule for pages on this machine.
+    mainWindow.webContents.session.setPermissionCheckHandler((webContents, _permission, requestingOrigin) =>
+        embeddedClient.decidesLoopbackPermission(requestingOrigin, webContents?.id) ?? true);
 
     // NOTE: Popups configuration and SDK handlers are set up on the
     // meetingWindow (not the launcher) because the conference iframe

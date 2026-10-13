@@ -25,3 +25,8 @@ export const MAX_SERVERS = 8;
  * A file that must exist in the bundle for the embedded client to be offered.
  */
 export const BUNDLE_MARKER = 'libs/app.bundle.min.js';
+
+/**
+ * How many upstream ports are remembered between launches (least recently used are pruned).
+ */
+export const MAX_REMEMBERED_PORTS = 20;

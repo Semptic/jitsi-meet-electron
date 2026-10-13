@@ -6,8 +6,6 @@ const { describe, it } = require('node:test');
 
 const {
     classifyPath,
-    cookiePrefix,
-    filterRequestCookies,
     isAllowedHost,
     isAllowedOrigin,
     parseRequestTarget,
@@ -70,7 +68,8 @@ describe('resolveStaticPath', () => {
     });
 
     it('refuses traversal in every encoding, NUL, backslash and directories', () => {
-        for (const f of [ '/libs/../x', '/libs/%2e%2e/x', '/libs/..%2fx', '/libs/%2E%2E%2Fx', '/libs/./a.js',
+        for (const f of [ '/libs/.git/config', '/libs/.env', '/.hidden/a.js', '/libs/a/.DS_Store',
+            '/libs/../x', '/libs/%2e%2e/x', '/libs/..%2fx', '/libs/%2E%2E%2Fx', '/libs/./a.js',
             '/libs/a%00.js', '/libs/..\\x', '/libs/%5cx', '/libs/', '/libs//', '/libs/%zz', 'libs/a.js' ]) {
             assert.equal(resolveStaticPath(root, f), null, f);
         }
@@ -78,23 +77,28 @@ describe('resolveStaticPath', () => {
 });
 
 describe('host and origin checks', () => {
-    it('accepts only the exact loopback host and port', () => {
-        assert.equal(isAllowedHost('127.0.0.1:4000', 4000), true);
-        for (const h of [ 'localhost:4000', '127.0.0.1:4001', '127.0.0.1', 'evil.example:4000',
-            '127.0.0.1:4000.evil.example', undefined, '[::1]:4000' ]) {
-            assert.equal(isAllowedHost(h, 4000), false, String(h));
+    const host = 'abcdef0123456789.localhost';
+
+    it('accepts only the exact per-upstream host and port, case-insensitively', () => {
+        assert.equal(isAllowedHost(`${host}:4000`, host, 4000), true);
+        assert.equal(isAllowedHost(`${host.toUpperCase()}:4000`, host, 4000), true);
+        for (const h of [ 'localhost:4000', '127.0.0.1:4000', `${host}`, `${host}:4001`, `${host}.evil.example:4000`,
+            'evil.example:4000', `x.${host}:4000`, `${host}:4000, evil.example`, `${host}:04000`, ` ${host}:4000`,
+            'abcdef0123456780.localhost:4000', undefined, '[::1]:4000', '' ]) {
+            assert.equal(isAllowedHost(h, host, 4000), false, String(h));
         }
     });
 
     it('requires the server origin for websockets and tolerates a missing one otherwise', () => {
-        const o = 'http://127.0.0.1:4000';
+        const o = 'http://abcdef0123456789.localhost:4000';
 
         assert.equal(isAllowedOrigin(o, o, true), true);
         assert.equal(isAllowedOrigin(undefined, o, true), false);
         assert.equal(isAllowedOrigin(undefined, o, false), true);
         assert.equal(isAllowedOrigin('https://evil.example', o, false), false);
         assert.equal(isAllowedOrigin('null', o, false), false);
-        assert.equal(isAllowedOrigin('http://127.0.0.1:4001', o, true), false);
+        assert.equal(isAllowedOrigin('http://abcdef0123456789.localhost:4001', o, true), false);
+        assert.equal(isAllowedOrigin([ o, o ], o, true), false);
     });
 });
 
@@ -102,17 +106,39 @@ describe('parseUpstream', () => {
     it('reduces a server URL to its origin', () => {
         assert.equal(parseUpstream('https://meet.example.com/tenant?x=1'), 'https://meet.example.com');
         assert.equal(parseUpstream('https://meet.example.com:8443'), 'https://meet.example.com:8443');
+        assert.equal(parseUpstream('https://Meet.Example.com./room'), 'https://meet.example.com');
+        assert.equal(parseUpstream('https://meet.example.com.:8443/x'), 'https://meet.example.com:8443');
     });
 
-    it('refuses everything that is not an https server on another machine', () => {
+    it('refuses everything that is not an https server on a public address', () => {
         for (const u of [ 'http://meet.example.com', 'ftp://x', `${'java'}script:alert(1)`, 'https://user:pw@x.com',
-            'https://localhost', 'https://127.0.0.1', 'https://sub.localhost', 'https://[::1]', 'https://0.0.0.0',
+
+            // loopback, by name and address, with trailing dots and odd spellings
+            'https://localhost', 'https://localhost.', 'https://LOCALHOST', 'https://sub.localhost',
+            'https://a.b.localhost.', 'https://127.0.0.1', 'https://127.0.0.2', 'https://127.255.255.254',
+            'https://2130706433', 'https://0x7f.1', 'https://0.0.0.0', 'https://[::1]', 'https://[::]',
+
+            // IPv4-mapped IPv6
+            'https://[::ffff:127.0.0.1]', 'https://[::ffff:7f00:1]', 'https://[::ffff:10.0.0.1]',
+            'https://[::ffff:c0a8:1]', 'https://[0:0:0:0:0:ffff:a9fe:a9fe]',
+
+            // private, link-local, unique local
+            'https://10.0.0.1', 'https://10.255.255.255', 'https://172.16.0.1', 'https://172.31.255.255',
+            'https://192.168.1.1', 'https://169.254.169.254', 'https://100.64.0.1', 'https://[fc00::1]',
+            'https://[fd12:3456::1]', 'https://[fe80::1]', 'https://[febf::1]',
             'not a url', '', 42, null, undefined, `https://${'a'.repeat(3000)}.com` ]) {
             assert.equal(parseUpstream(u), null, String(u).slice(0, 40));
         }
     });
 
-    it('allows loopback only when explicitly enabled', () => {
+    it('accepts public addresses next to the private ranges', () => {
+        for (const u of [ 'https://172.15.0.1', 'https://172.32.0.1', 'https://192.169.0.1', 'https://8.8.8.8',
+            'https://[2001:4860:4860::8888]' ]) {
+            assert.ok(parseUpstream(u), u);
+        }
+    });
+
+    it('allows loopback only through the test hook', () => {
         assert.equal(parseUpstream('http://127.0.0.1:9000', true), 'http://127.0.0.1:9000');
         assert.equal(parseUpstream('http://meet.example.com', true), null);
     });
@@ -135,17 +161,9 @@ describe('rewrites', () => {
         assert.equal(rewriteReferer(`${own}.evil.example/`, up, own), undefined);
     });
 
-    it('keeps cookies of different upstreams apart', () => {
-        const a = cookiePrefix('https://a.example');
-        const b = cookiePrefix('https://b.example');
-
-        assert.notEqual(a, b);
-        assert.equal(rewriteSetCookie('sid=1; Domain=a.example; Path=/; Secure', a), `${a}sid=1; Path=/; Secure`);
-        const jar = `${a}sid=1; ${b}sid=2; unrelated=3`;
-
-        assert.equal(filterRequestCookies(jar, a), 'sid=1');
-        assert.equal(filterRequestCookies(jar, b), 'sid=2');
-        assert.equal(filterRequestCookies('unrelated=3', a), undefined);
-        assert.equal(filterRequestCookies(undefined, a), undefined);
+    it('drops the cookie Domain and keeps names (so __Host- / __Secure- stay meaningful)', () => {
+        assert.equal(rewriteSetCookie('sid=1; Domain=a.example; Path=/; Secure'), 'sid=1; Path=/; Secure');
+        assert.equal(rewriteSetCookie('__Host-sid=1; Path=/; Secure; SameSite=None'),
+            '__Host-sid=1; Path=/; Secure; SameSite=None');
     });
 });

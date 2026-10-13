@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 
-import { LOOPBACK_HOST } from './constants';
+import { isForbiddenUpstreamHost } from './hosts';
 
 /**
  * Pure routing and validation helpers of the embedded client server. They hold
@@ -94,7 +94,8 @@ export function resolveStaticPath(root: string, file: string): string | null {
 
     const segments = decoded.split('/').slice(1);
 
-    if (segments.some(segment => segment === '..' || segment === '.')) {
+    // Dot segments and dotfiles (.git, .env, ...) are never served.
+    if (segments.some(segment => segment.startsWith('.'))) {
         return null;
     }
 
@@ -109,14 +110,16 @@ export function resolveStaticPath(root: string, file: string): string | null {
 }
 
 /**
- * Whether the Host header is exactly this server (DNS rebinding protection).
+ * Whether the Host header is exactly this server (DNS rebinding protection):
+ * the per-upstream host name and the port, compared case-insensitively.
  *
  * @param {string|undefined} host - The Host header.
+ * @param {string} hostname - The embedded host name of this server.
  * @param {number} port - The server port.
  * @returns {boolean}
  */
-export function isAllowedHost(host: string | undefined, port: number): boolean {
-    return host === `${LOOPBACK_HOST}:${port}`;
+export function isAllowedHost(host: string | undefined, hostname: string, port: number): boolean {
+    return typeof host === 'string' && host.toLowerCase() === `${hostname}:${port}`;
 }
 
 /**
@@ -138,14 +141,15 @@ export function isAllowedOrigin(origin: string | string[] | undefined, serverOri
 
 /**
  * Parses a user supplied Jitsi server URL into the single origin the server may
- * forward to. Loopback targets are refused (the server would proxy to itself or
- * to local services) unless explicitly allowed, which only tests do.
+ * forward to. Only https servers on public addresses qualify: loopback, private,
+ * link-local and unspecified hosts are refused so the server can never be pointed at
+ * itself or at local services. The only exception is a test hook.
  *
  * @param {unknown} serverURL - The URL (https://host[:port][/tenant]).
- * @param {boolean} allowLoopback - Allow http(s) loopback upstreams.
+ * @param {boolean} unsafeAllowLoopbackForTests - Allow http(s) loopback upstreams (tests only).
  * @returns {string|null} The origin, or null if not acceptable.
  */
-export function parseUpstream(serverURL: unknown, allowLoopback = false): string | null {
+export function parseUpstream(serverURL: unknown, unsafeAllowLoopbackForTests = false): string | null {
     if (typeof serverURL !== 'string' || serverURL.length > 2048) {
         return null;
     }
@@ -162,18 +166,17 @@ export function parseUpstream(serverURL: unknown, allowLoopback = false): string
         return null;
     }
 
-    const host = url.hostname.toLowerCase();
-    const loopback = host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || host === '[::]'
-        || host === '0.0.0.0' || /^127\./.test(host);
+    const forbidden = isForbiddenUpstreamHost(url.hostname);
 
-    if (loopback && !allowLoopback) {
+    if (forbidden && !unsafeAllowLoopbackForTests) {
         return null;
     }
-    if (url.protocol !== 'https:' && !(allowLoopback && loopback && url.protocol === 'http:')) {
+    if (url.protocol !== 'https:' && !(unsafeAllowLoopbackForTests && forbidden && url.protocol === 'http:')) {
         return null;
     }
 
-    return url.origin;
+    // A trailing dot names the same host but would be a different origin.
+    return url.origin.replace(/\.+(:\d+)?$/, '$1');
 }
 
 /**
@@ -219,56 +222,15 @@ export function rewriteReferer(
 }
 
 /**
- * Cookies of all embedded servers share one cookie jar because cookies are not
- * scoped by port. Upstream cookies are therefore stored under a per-upstream
- * name prefix, so the cookies of one Jitsi server are never sent to another.
- *
- * @param {string} upstreamOrigin - The upstream origin.
- * @returns {string} The prefix.
- */
-export function cookiePrefix(upstreamOrigin: string): string {
-    let hash = 5381;
-
-    for (const char of upstreamOrigin) {
-        // eslint-disable-next-line no-bitwise
-        hash = (hash * 33 ^ char.charCodeAt(0)) >>> 0;
-    }
-
-    return `jmec${hash.toString(16)}_`;
-}
-
-/**
- * Turns an upstream Set-Cookie into one for the embedded origin: the name gets
- * the per-upstream prefix and Domain is dropped (it would never match 127.0.0.1).
+ * Turns an upstream Set-Cookie into one that the embedded origin accepts: the Domain
+ * attribute (it names the upstream, never the embedded host) is dropped, which makes
+ * the cookie host-only. Cookies are scoped by host, and every upstream has its own host,
+ * so no further isolation is needed. Names, so `__Host-` and `__Secure-` prefixes, stay.
  *
  * @param {string} setCookie - The upstream Set-Cookie value.
- * @param {string} prefix - The cookie prefix.
  * @returns {string} The rewritten value.
  */
-export function rewriteSetCookie(setCookie: string, prefix: string): string {
-    const parts = setCookie.split(';');
-
-    parts[0] = prefix + parts[0].trimStart();
-
-    return parts.filter((part, index) => index === 0 || !/^\s*domain\s*=/i.test(part)).join(';');
-}
-
-/**
- * Keeps only this upstream's cookies from a Cookie header and removes the prefix.
- *
- * @param {string|undefined} cookieHeader - The browser's Cookie header.
- * @param {string} prefix - The cookie prefix.
- * @returns {string|undefined} The upstream Cookie header, or undefined if empty.
- */
-export function filterRequestCookies(cookieHeader: string | undefined, prefix: string): string | undefined {
-    if (typeof cookieHeader !== 'string') {
-        return undefined;
-    }
-
-    const own = cookieHeader.split(';')
-        .map(pair => pair.trim())
-        .filter(pair => pair.startsWith(prefix))
-        .map(pair => pair.slice(prefix.length));
-
-    return own.length ? own.join('; ') : undefined;
+export function rewriteSetCookie(setCookie: string): string {
+    return setCookie.split(';').filter((part, index) => index === 0 || !/^\s*domain\s*=/i.test(part))
+        .join(';');
 }

@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { BUNDLE_MARKER, MAX_SERVERS } from './constants';
+import { BUNDLE_MARKER, MAX_REMEMBERED_PORTS, MAX_SERVERS } from './constants';
+import { embeddedHostName } from './hosts';
 import { parseUpstream } from './routing';
 import { IEmbeddedServer, createEmbeddedServer } from './server';
 
@@ -11,11 +12,6 @@ import { IEmbeddedServer, createEmbeddedServer } from './server';
  */
 
 export interface IEmbeddedClientManagerOptions {
-
-    /**
-     * Permit loopback upstreams (tests only).
-     */
-    allowLoopbackUpstream?: boolean;
 
     /**
      * Absolute path of the bundled client.
@@ -30,10 +26,15 @@ export interface IEmbeddedClientManagerOptions {
     onLog?: (line: string) => void;
 
     /**
-     * File remembering the port of every upstream, so its web origin (and the
-     * localStorage / OPFS data of the client below it) survives restarts.
+     * File remembering the port of the most recent upstreams (by the hash in their embedded
+     * host name, no server names), so the web origin and the client's storage survive restarts.
      */
     portStorePath?: string;
+
+    /**
+     * Permit loopback upstreams and skip the DNS guard (tests only; the app never sets it).
+     */
+    unsafeAllowLoopbackForTests?: boolean;
 }
 
 /**
@@ -48,7 +49,8 @@ export class EmbeddedClientManager {
 
     private readonly servers = new Map<string, Promise<IEmbeddedServer>>();
     private readonly origins = new Set<string>();
-    private ports: Record<string, number> | undefined;
+    private readonly runningPorts = new Set<number>();
+    private ports: Record<string, { port: number; used: number; }> | undefined;
 
     /**
      * Creates the manager.
@@ -84,7 +86,7 @@ export class EmbeddedClientManager {
      * @returns {Promise<{ origin: string }|null>} Null when the embedded client cannot be used.
      */
     async resolve(serverURL: unknown): Promise<{ origin: string; } | null> {
-        const upstream = parseUpstream(serverURL, this.options.allowLoopbackUpstream);
+        const upstream = parseUpstream(serverURL, this.options.unsafeAllowLoopbackForTests);
 
         if (!upstream || !this.isAvailable()) {
             return null;
@@ -116,6 +118,7 @@ export class EmbeddedClientManager {
 
         this.servers.clear();
         this.origins.clear();
+        this.runningPorts.clear();
         await Promise.all(running.map(async pending => (await pending.catch(() => undefined))?.close()));
     }
 
@@ -127,19 +130,25 @@ export class EmbeddedClientManager {
      */
     private async start(upstreamOrigin: string): Promise<IEmbeddedServer> {
         const ports = this.readPorts();
+        const key = embeddedHostName(upstreamOrigin).replace('.localhost', '');
+        const remembered = ports[key]?.port;
+        const taken = [ ...this.runningPorts ];
+
+        // A remembered port that another running server holds is never contested.
         const server = await createEmbeddedServer({
             bundleDir: this.options.bundleDir,
             onLog: this.options.onLog,
-            preferredPort: ports[upstreamOrigin],
+            preferredPort: remembered && !taken.includes(remembered) ? remembered : undefined,
             token: this.token,
+            unsafeAllowLoopbackForTests: this.options.unsafeAllowLoopbackForTests,
             upstreamOrigin
         });
 
         this.origins.add(server.origin);
-        if (ports[upstreamOrigin] !== server.port) {
-            ports[upstreamOrigin] = server.port;
-            this.writePorts(ports);
-        }
+        this.runningPorts.add(server.port);
+        ports[key] = { port: server.port,
+            used: Date.now() };
+        this.writePorts(ports);
 
         return server;
     }
@@ -147,17 +156,21 @@ export class EmbeddedClientManager {
     /**
      * Reads the remembered ports (best effort).
      *
-     * @returns {Record<string, number>}
+     * @returns {Record<string, { port: number, used: number }>}
      */
-    private readPorts(): Record<string, number> {
+    private readPorts(): Record<string, { port: number; used: number; }> {
         if (!this.ports) {
             this.ports = {};
             try {
                 const parsed = JSON.parse(fs.readFileSync(this.options.portStorePath ?? '', 'utf8'));
 
-                for (const [ key, value ] of Object.entries(parsed)) {
-                    if (Number.isInteger(value) && (value as number) > 1023 && (value as number) < 65536) {
-                        this.ports[key] = value as number;
+                for (const [ key, value ] of Object.entries<{ port?: unknown; used?: unknown; }>(parsed)) {
+                    const { port, used } = value ?? {};
+
+                    if (/^[0-9a-f]{16}$/.test(key) && Number.isInteger(port) && (port as number) > 1023
+                            && (port as number) < 65536) {
+                        this.ports[key] = { port: port as number,
+                            used: typeof used === 'number' ? used : 0 };
                     }
                 }
             } catch {
@@ -169,17 +182,21 @@ export class EmbeddedClientManager {
     }
 
     /**
-     * Persists the ports (best effort).
+     * Persists the ports, keeping only the most recently used ones (best effort).
      *
-     * @param {Record<string, number>} ports - The ports by upstream origin.
+     * @param {Record<string, { port: number, used: number }>} ports - The ports by upstream hash.
      * @returns {void}
      */
-    private writePorts(ports: Record<string, number>) {
+    private writePorts(ports: Record<string, { port: number; used: number; }>) {
+        const newest = Object.entries(ports).sort(([ , a ], [ , b ]) => b.used - a.used)
+            .slice(0, MAX_REMEMBERED_PORTS);
+
+        this.ports = Object.fromEntries(newest);
         if (!this.options.portStorePath) {
             return;
         }
         try {
-            fs.writeFileSync(this.options.portStorePath, JSON.stringify(ports));
+            fs.writeFileSync(this.options.portStorePath, JSON.stringify(this.ports), { mode: 0o600 });
         } catch {
             // Not fatal: the origin merely changes next launch.
         }

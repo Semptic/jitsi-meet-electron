@@ -16,6 +16,7 @@ const { EmbeddedClientManager } = require('../../app/features/embedded-client/ma
 const { createEmbeddedServer } = require('../../app/features/embedded-client/server');
 
 const TOKEN = 'test-token-0123456789';
+let currentHost = '';
 
 /**
  * Starts a fake Jitsi server: records every request it sees and answers a few routes.
@@ -106,7 +107,7 @@ async function startFakeUpstream(name) {
  */
 function request({ port, path: reqPath = '/', method = 'GET', headers = {}, body, token = TOKEN, host }) {
     return new Promise((resolve, reject) => {
-        const allHeaders = { host: host ?? `127.0.0.1:${port}`,
+        const allHeaders = { host: host ?? `${currentHost}:${port}`,
             ...token ? { [TOKEN_HEADER]: token } : {},
             ...headers };
         const req = http.request({ host: '127.0.0.1',
@@ -157,7 +158,8 @@ function rawRequest(port, raw) {
  */
 function openWs(url, headers) {
     return new Promise(resolve => {
-        const ws = new WebSocket(url, { headers });
+        const ws = new WebSocket(url, { headers: { host: `${currentHost}:${new URL(url).port}`,
+            ...headers } });
 
         ws.on('open', () => resolve({ ws }));
         ws.on('unexpected-response', (_req, res) => resolve({ status: res.statusCode }));
@@ -193,9 +195,11 @@ describe('embedded client server', () => {
         other = await startFakeUpstream('B');
         server = await createEmbeddedServer({ bundleDir: bundle,
             token: TOKEN,
+            unsafeAllowLoopbackForTests: true,
             upstreamOrigin: upstream.origin });
         port = server.port;
         origin = server.origin;
+        currentHost = server.host;
     });
 
     after(async () => {
@@ -207,7 +211,8 @@ describe('embedded client server', () => {
     });
 
     it('binds to the loopback interface only, on an ephemeral port', () => {
-        assert.equal(origin, `http://127.0.0.1:${port}`);
+        assert.equal(origin, `http://${server.host}:${port}`);
+        assert.match(server.host, /^[0-9a-f]{16}\.localhost$/);
         assert.ok(port > 1023);
     });
 
@@ -276,7 +281,7 @@ describe('embedded client server', () => {
 
             for (const attempt of attempts) {
                 const answer = await rawRequest(port,
-                    `GET ${attempt} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
+                    `GET ${attempt} HTTP/1.1\r\nHost: ${currentHost}:${port}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
                     + 'Connection: close\r\n\r\n');
 
                 assert.doesNotMatch(answer, /top secret/, attempt);
@@ -350,20 +355,16 @@ describe('embedded client server', () => {
             assert.equal(zlib.gunzipSync(res.body).toString(), 'compressed hello');
         });
 
-        it('namespaces cookies per upstream, drops their Domain and sends back only their own', async () => {
+        it('drops the cookie Domain (host-only on the per-upstream host) and passes cookies on', async () => {
             const res = await request({ port,
                 path: '/cookie' });
             const cookies = res.headers['set-cookie'];
 
-            assert.equal(cookies.length, 2);
-            assert.match(cookies[0], /^jmec[0-9a-f]+_sid=abc; Path=\/; HttpOnly$/);
-            const prefix = cookies[0].split('sid=')[0];
-            const back = await request({ port,
+            assert.deepEqual(cookies, [ 'sid=abc; Path=/; HttpOnly', 'other=1; Path=/x' ]);
+            await request({ port,
                 path: '/config.js',
-                headers: { cookie: `${prefix}sid=abc; jmec0_sid=foreign; plain=1` } });
-
-            assert.equal(upstream.seen.at(-1).headers.cookie, 'sid=abc');
-            assert.equal(back.status, 200);
+                headers: { cookie: 'sid=abc; plain=1' } });
+            assert.equal(upstream.seen.at(-1).headers.cookie, 'sid=abc; plain=1');
         });
     });
 
@@ -376,7 +377,17 @@ describe('embedded client server', () => {
             assert.equal((await request({ port,
                 host: `localhost:${port}` })).status, 403);
             assert.equal((await request({ port,
-                host: `127.0.0.1:${port + 1}` })).status, 403);
+                host: `127.0.0.1:${port}` })).status, 403);
+            assert.equal((await request({ port,
+                host: '127.0.0.1' })).status, 403);
+            assert.equal((await request({ port,
+                host: `${currentHost}:${port + 1}` })).status, 403);
+            assert.equal((await request({ port,
+                host: `${currentHost}` })).status, 403);
+            assert.equal(upstream.seen.length, count);
+            assert.equal((await request({ port,
+                host: `${currentHost.toUpperCase()}:${port}`,
+                path: '/libs/app.bundle.min.js' })).status, 200);
             assert.equal(upstream.seen.length, count);
         });
 
@@ -388,6 +399,32 @@ describe('embedded client server', () => {
                 path: '/libs/app.bundle.min.js' })).status, 403);
             assert.equal((await request({ port,
                 token: `${TOKEN}x` })).status, 403);
+        });
+
+        it('rejects duplicated or malformed token headers', async () => {
+            const dup = await rawRequest(port,
+                `GET /libs/app.bundle.min.js HTTP/1.1\r\nHost: ${currentHost}:${port}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
+                + `${TOKEN_HEADER}: ${TOKEN}\r\nConnection: close\r\n\r\n`);
+            const empty = await rawRequest(port,
+                `GET /libs/app.bundle.min.js HTTP/1.1\r\nHost: ${currentHost}:${port}\r\n${TOKEN_HEADER}:\r\n`
+                + 'Connection: close\r\n\r\n');
+
+            assert.match(dup, /^HTTP\/1\.1 403/);
+            assert.match(empty, /^HTTP\/1\.1 403/);
+            assert.equal((await request({ port,
+                token: TOKEN.toUpperCase() })).status, 403);
+        });
+
+        it('refuses request smuggling with both Content-Length and Transfer-Encoding', async () => {
+            const count = upstream.seen.length;
+            const answer = await rawRequest(port,
+                `POST /http-bind HTTP/1.1\r\nHost: ${currentHost}:${port}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
+                + 'Content-Length: 4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n'
+                + '0\r\n\r\nGET /smuggled HTTP/1.1\r\nHost: x\r\n\r\n');
+
+            assert.match(answer, /^HTTP\/1\.1 400/);
+            assert.equal(upstream.seen.length, count);
+            assert.ok(!upstream.seen.some(r => r.url === '/smuggled'));
         });
 
         it('rejects a foreign Origin', async () => {
@@ -404,12 +441,12 @@ describe('embedded client server', () => {
                 `GET ${other.origin}/config.js HTTP/1.1\r\nHost: ${otherHost}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
                 + 'Connection: close\r\n\r\n');
             const protocolRelative = await rawRequest(port,
-                `GET //${otherHost}/config.js HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
+                `GET //${otherHost}/config.js HTTP/1.1\r\nHost: ${currentHost}:${port}\r\n${TOKEN_HEADER}: ${TOKEN}\r\n`
                 + 'Connection: close\r\n\r\n');
             const connect = await rawRequest(port,
                 `CONNECT ${otherHost} HTTP/1.1\r\nHost: ${otherHost}\r\n\r\n`);
 
-            assert.match(absolute, /^HTTP\/1\.1 (400|403)/);
+            assert.match(absolute, /^HTTP\/1\.1 400 /);
             assert.match(protocolRelative, /^HTTP\/1\.1 400/);
             assert.match(connect, /^HTTP\/1\.1 405/);
             assert.equal(other.seen.length, count, 'a non-allow-listed upstream must never be contacted');
@@ -481,9 +518,20 @@ describe('embedded client server', () => {
         });
     });
 
+    it('refuses dotfiles in the bundle', async () => {
+        fs.writeFileSync(path.join(bundle, 'libs/.env'), 'SECRET=1');
+        fs.mkdirSync(path.join(bundle, 'static/.git'), { recursive: true });
+        fs.writeFileSync(path.join(bundle, 'static/.git/config'), 'x');
+        assert.equal((await request({ port,
+            path: '/libs/.env' })).status, 400);
+        assert.equal((await request({ port,
+            path: '/static/.git/config' })).status, 400);
+    });
+
     it('can be restarted on its remembered port and falls back when it is taken', async () => {
         const first = await createEmbeddedServer({ bundleDir: bundle,
             token: TOKEN,
+            unsafeAllowLoopbackForTests: true,
             upstreamOrigin: upstream.origin });
         const rememberedPort = first.port;
 
@@ -491,10 +539,12 @@ describe('embedded client server', () => {
 
         const again = await createEmbeddedServer({ bundleDir: bundle,
             token: TOKEN,
+            unsafeAllowLoopbackForTests: true,
             upstreamOrigin: upstream.origin,
             preferredPort: rememberedPort });
         const taken = await createEmbeddedServer({ bundleDir: bundle,
             token: TOKEN,
+            unsafeAllowLoopbackForTests: true,
             upstreamOrigin: upstream.origin,
             preferredPort: rememberedPort });
 
@@ -538,7 +588,7 @@ describe('EmbeddedClientManager', () => {
     it('gives each upstream its own origin, reuses it, and remembers ports across restarts', async () => {
         const portStorePath = path.join(tmp, 'ports.json');
         const options = { bundleDir: bundle,
-            allowLoopbackUpstream: true,
+            unsafeAllowLoopbackForTests: true,
             portStorePath };
         const manager = new EmbeddedClientManager(options);
         const a = await manager.resolve('http://127.0.0.1:41001/tenant');
@@ -561,12 +611,112 @@ describe('EmbeddedClientManager', () => {
 
     it('caps the number of servers', async () => {
         const manager = new EmbeddedClientManager({ bundleDir: bundle,
-            allowLoopbackUpstream: true,
+            unsafeAllowLoopbackForTests: true,
             maxServers: 2 });
 
         assert.ok(await manager.resolve('http://127.0.0.1:41011'));
         assert.ok(await manager.resolve('http://127.0.0.1:41012'));
         assert.equal(await manager.resolve('http://127.0.0.1:41013'), null);
         await manager.close();
+    });
+
+    it('puts every upstream on its own host, so cookies and storage are per upstream', async () => {
+        const manager = new EmbeddedClientManager({ bundleDir: bundle,
+            unsafeAllowLoopbackForTests: true });
+        const a = await manager.resolve('http://127.0.0.1:41021');
+        const b = await manager.resolve('http://127.0.0.1:41022');
+        const hostA = new URL(a.origin).hostname;
+        const hostB = new URL(b.origin).hostname;
+
+        assert.notEqual(hostA, hostB);
+        assert.match(hostA, /^[0-9a-f]{16}\.localhost$/);
+
+        // B's server refuses a request addressed to A's host, even on B's own port.
+        const res = await request({ port: Number(new URL(b.origin).port),
+            host: `${hostA}:${new URL(b.origin).port}`,
+            token: manager.token });
+
+        assert.equal(res.status, 403);
+        await manager.close();
+    });
+
+    it('never lets upstream B take over the origin A used, whatever ports are remembered', async () => {
+        const portStorePath = path.join(tmp, 'ports-swap.json');
+        const options = { bundleDir: bundle,
+            unsafeAllowLoopbackForTests: true,
+            portStorePath };
+        const first = new EmbeddedClientManager(options);
+        const a = await first.resolve('http://127.0.0.1:41031');
+
+        await first.close();
+
+        // Pretend B was last seen on the port A used (it is free again).
+        const store = JSON.parse(fs.readFileSync(portStorePath, 'utf8'));
+        const bKey = require('node:crypto').createHash('sha256')
+.update('http://127.0.0.1:41032')
+            .digest('hex')
+            .slice(0, 16);
+
+        store[bKey] = { port: Number(new URL(a.origin).port),
+            used: Date.now() };
+        fs.writeFileSync(portStorePath, JSON.stringify(store));
+
+        const second = new EmbeddedClientManager(options);
+        const b = await second.resolve('http://127.0.0.1:41032');
+        const aAgain = await second.resolve('http://127.0.0.1:41031');
+
+        assert.notEqual(new URL(b.origin).hostname, new URL(a.origin).hostname, 'B never gets A\'s host');
+        assert.notEqual(b.origin, a.origin);
+        assert.notEqual(b.origin, aAgain.origin);
+        assert.equal(new URL(aAgain.origin).hostname, new URL(a.origin).hostname);
+        await second.close();
+    });
+
+    it('does not hand out a remembered port another running upstream holds', async () => {
+        const portStorePath = path.join(tmp, 'ports-conflict.json');
+        const manager = new EmbeddedClientManager({ bundleDir: bundle,
+            unsafeAllowLoopbackForTests: true,
+            portStorePath });
+        const a = await manager.resolve('http://127.0.0.1:41041');
+        const store = JSON.parse(fs.readFileSync(portStorePath, 'utf8'));
+
+        // B's remembered port is the one A is running on right now.
+        const bKey = require('node:crypto').createHash('sha256')
+.update('http://127.0.0.1:41042')
+            .digest('hex')
+            .slice(0, 16);
+
+        store[bKey] = { port: Number(new URL(a.origin).port),
+            used: Date.now() };
+        fs.writeFileSync(portStorePath, JSON.stringify(store));
+
+        const fresh = new EmbeddedClientManager({ bundleDir: bundle,
+            unsafeAllowLoopbackForTests: true,
+            portStorePath });
+        const a2 = await fresh.resolve('http://127.0.0.1:41041');
+        const b = await fresh.resolve('http://127.0.0.1:41042');
+
+        assert.notEqual(new URL(b.origin).port, new URL(a2.origin).port);
+        await fresh.close();
+        await manager.close();
+    });
+
+    it('keeps at most 20 remembered ports and stores no host names', async () => {
+        const portStorePath = path.join(tmp, 'ports-cap.json');
+        const manager = new EmbeddedClientManager({ bundleDir: bundle,
+            unsafeAllowLoopbackForTests: true,
+            maxServers: 40,
+            portStorePath });
+
+        for (let i = 0; i < 24; i++) {
+            await manager.resolve(`http://127.0.0.1:${42000 + i}`);
+        }
+        await manager.close();
+        const raw = fs.readFileSync(portStorePath, 'utf8');
+        const store = JSON.parse(raw);
+
+        assert.equal(Object.keys(store).length, 20);
+        assert.ok(Object.keys(store).every(key => /^[0-9a-f]{16}$/.test(key)));
+        assert.doesNotMatch(raw, /127\.0\.0\.1|localhost|http/);
     });
 });

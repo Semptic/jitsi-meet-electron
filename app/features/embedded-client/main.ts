@@ -2,20 +2,17 @@ import { BrowserWindow, IpcMainInvokeEvent, ipcMain } from 'electron';
 import log from 'electron-log';
 import * as path from 'node:path';
 
-import { LOOPBACK_HOST, RESOLVE_CHANNEL, TOKEN_HEADER } from './constants';
+import { RESOLVE_CHANNEL, TOKEN_HEADER } from './constants';
 import { EmbeddedClientManager } from './manager';
+import { decideLoopbackPermission, isTrustedAppSender, shouldAddToken } from './trust';
 
 export interface IEmbeddedClientMain {
 
     /**
      * Adds the per-launch token to a request of the meeting window to an embedded server.
-     * Returns the headers to send, or undefined when the request is not for an embedded server.
+     * Returns the headers to send, or undefined when the request does not qualify.
      */
-    addToken: (details: {
-        requestHeaders: Record<string, string>;
-        url: string;
-        webContentsId?: number;
-    }) => Record<string, string> | undefined;
+    addToken: (details: Electron.OnBeforeSendHeadersListenerDetails) => Record<string, string> | undefined;
 
     /**
      * Stops the servers.
@@ -23,11 +20,9 @@ export interface IEmbeddedClientMain {
     close: () => Promise<void>;
 
     /**
-     * Whether a permission request from the given page may be granted.
-     * Pages on the loopback interface are only trusted when they are an embedded
-     * origin loaded by the meeting window; everything else is not decided here.
+     * Permission verdict for pages on this machine (undefined: not decided here).
      */
-    decidesLoopbackPermission: (requestingUrl: string, webContentsId: number) => boolean | undefined;
+    decidesLoopbackPermission: (requestingUrl: string, webContentsId: number | undefined) => boolean | undefined;
 
     manager: EmbeddedClientManager;
 }
@@ -64,8 +59,12 @@ export function setupEmbeddedClientMain(options: {
 
         // Only the app's own page in the meeting window (never a frame of the
         // Jitsi iframe, which has no preload anyway) may open a server.
-        if (!meetingWindow || event.sender !== meetingWindow.webContents || !event.senderFrame
-                || event.senderFrame.parent !== null || !event.senderFrame.url.startsWith('file://')) {
+        if (!meetingWindow || !isTrustedAppSender({
+            isExpectedWebContents: event.sender === meetingWindow.webContents,
+            hasFrame: Boolean(event.senderFrame),
+            parentIsNull: event.senderFrame?.parent === null,
+            frameUrl: event.senderFrame?.url
+        })) {
             throw new Error('Rejected IPC from an untrusted sender');
         }
 
@@ -81,46 +80,34 @@ export function setupEmbeddedClientMain(options: {
     return {
         manager,
         close: () => manager.close(),
-        addToken({ requestHeaders, url, webContentsId }) {
-            const meetingWindow = getMeetingWindow();
-
-            if (!meetingWindow || webContentsId !== meetingWindow.webContents.id) {
-                return undefined;
-            }
-
-            let parsed: URL;
+        addToken(details) {
+            const frame = details.frame;
+            let frameUrl: string | undefined;
+            let frameIsTop = false;
 
             try {
-                parsed = new URL(url);
+                frameUrl = frame?.url;
+                frameIsTop = frame?.parent === null;
             } catch {
-                return undefined;
+                // The frame is already gone: treat as unknown (no token).
             }
 
-            if ((parsed.protocol !== 'http:' && parsed.protocol !== 'ws:') || parsed.hostname !== LOOPBACK_HOST
-                    || !manager.isEmbeddedOrigin(`http://${parsed.host}`)) {
-                return undefined;
-            }
+            const allowed = shouldAddToken({
+                url: details.url,
+                webContentsId: details.webContentsId,
+                meetingWebContentsId: getMeetingWindow()?.webContents.id,
+                resourceType: details.resourceType,
+                frameUrl,
+                frameIsTop,
+                headers: details.requestHeaders,
+                isEmbeddedOrigin: origin => manager.isEmbeddedOrigin(origin)
+            });
 
-            return { ...requestHeaders,
-                [TOKEN_HEADER]: manager.token };
+            return allowed ? { ...details.requestHeaders,
+                [TOKEN_HEADER]: manager.token } : undefined;
         },
-        decidesLoopbackPermission(requestingUrl, webContentsId) {
-            let parsed: URL;
-
-            try {
-                parsed = new URL(requestingUrl);
-            } catch {
-                return undefined;
-            }
-
-            if (parsed.hostname !== LOOPBACK_HOST && parsed.hostname !== 'localhost' && parsed.hostname !== '[::1]') {
-                return undefined;
-            }
-
-            const meetingWindow = getMeetingWindow();
-
-            return Boolean(meetingWindow) && webContentsId === meetingWindow!.webContents.id
-                && parsed.hostname === LOOPBACK_HOST && manager.isEmbeddedOrigin(parsed.origin);
-        }
+        decidesLoopbackPermission: (requestingUrl, webContentsId) => decideLoopbackPermission(
+            requestingUrl, webContentsId, getMeetingWindow()?.webContents.id,
+            origin => manager.isEmbeddedOrigin(origin))
     };
 }

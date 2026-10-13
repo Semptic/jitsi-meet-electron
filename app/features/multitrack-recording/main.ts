@@ -3,6 +3,8 @@ import { BrowserWindow, IpcMainInvokeEvent, dialog, ipcMain } from 'electron';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 
+import { isTrustedAppSender } from '../embedded-client/trust';
+
 import {
     MAX_CHUNK_BYTES,
     MAX_DIRECTORIES,
@@ -56,7 +58,12 @@ export function setupMultitrackRecordingMain(window: BrowserWindow, options: IMu
     });
 
     const assertTrusted = (event: IpcMainInvokeEvent) => {
-        if (event.sender !== webContents || !event.senderFrame || event.senderFrame.parent !== null) {
+        if (!isTrustedAppSender({
+            isExpectedWebContents: event.sender === webContents,
+            hasFrame: Boolean(event.senderFrame),
+            parentIsNull: event.senderFrame?.parent === null,
+            frameUrl: event.senderFrame?.url
+        })) {
             throw new Error('Rejected IPC from an untrusted sender');
         }
     };
