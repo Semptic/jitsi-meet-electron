@@ -88,6 +88,14 @@ SHOW_DEV_TOOLS=true npm start
 npm run dist
 ```
 
+#### Local fork build with an embedded web client
+
+`npm run dist:multitrack` builds **Jitsi Meet Multitrack**, a separate app that bundles a patched
+Jitsi Meet web client and serves it from a local loopback server inside the app (everything else is proxied to
+the configured Jitsi server). It installs next to the regular app, has its own settings and never updates itself.
+See [docs/embedded-client.md](docs/embedded-client.md) for the architecture, the security model and the exact
+commands to rebuild and reinstall.
+
 #### Working with `jitsi-meet-electron-sdk`
 
 For instructions on SDK versus electron-app separation and how to set up local development using `npm link`, please refer to the [Contributing and Local Development guide in the Jitsi Handbook](https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-electron-sdk#contributing-and-local-development).

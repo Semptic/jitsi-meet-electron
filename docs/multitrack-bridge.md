@@ -142,3 +142,7 @@ JITSI_DEFAULT_SERVER=https://localhost:8080 npm start
 
 (or set the server URL in the app settings). Then join a room; the client must
 use the bridge as described above.
+
+With the embedded client (see [embedded-client.md](embedded-client.md)) the iframe is served
+from `http://127.0.0.1:<port>` of the app's own loopback server instead of the Jitsi server, and the
+renderer then only trusts exactly that origin for the bridge.
