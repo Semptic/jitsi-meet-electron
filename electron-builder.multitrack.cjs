@@ -71,6 +71,15 @@ module.exports = {
             schemes: [ scheme ]
         }
     ],
+    // Electron fuses: no node-as-runtime, no NODE_OPTIONS / --inspect injection, code only from
+    // the (integrity checked) app.asar. Flipped before signing.
+    electronFuses: {
+        runAsNode: false,
+        enableNodeOptionsEnvironmentVariable: false,
+        enableNodeCliInspectArguments: false,
+        onlyLoadAppFromAsar: true,
+        enableEmbeddedAsarIntegrityValidation: true
+    },
     mas: undefined,
     linux: undefined,
     win: undefined
