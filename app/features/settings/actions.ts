@@ -5,7 +5,8 @@ import {
     SET_ALWAYS_ON_TOP_WINDOW_ENABLED,
     SET_DISABLE_AGC,
     SET_SERVER_TIMEOUT,
-    SET_SERVER_URL
+    SET_SERVER_URL,
+    SET_USE_EMBEDDED_CLIENT
 } from './actionTypes';
 
 
@@ -70,5 +71,21 @@ export function setWindowAlwaysOnTop(alwaysOnTopWindowEnabled: boolean) {
     return {
         type: SET_ALWAYS_ON_TOP_WINDOW_ENABLED,
         alwaysOnTopWindowEnabled
+    };
+}
+
+/**
+ * Set whether the embedded web client is used.
+ *
+ * @param {boolean} useEmbeddedClient - Whether to use the embedded client.
+ * @returns {{
+ *     type: SET_USE_EMBEDDED_CLIENT,
+ *     useEmbeddedClient
+ * }}
+ */
+export function setUseEmbeddedClient(useEmbeddedClient: boolean) {
+    return {
+        type: SET_USE_EMBEDDED_CLIENT,
+        useEmbeddedClient
     };
 }

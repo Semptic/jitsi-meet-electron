@@ -37,3 +37,14 @@ export const SET_SERVER_URL = 'SET_SERVER_URL';
  * }
  */
 export const SET_SERVER_TIMEOUT = 'SET_SERVER_TIMEOUT';
+
+/**
+ * The type of (redux) action that sets whether the meeting loads the embedded
+ * (bundled, patched) web client instead of the one the server delivers.
+ *
+ * @type {
+ *     type: SET_USE_EMBEDDED_CLIENT,
+ *     useEmbeddedClient
+ * }
+ */
+export const SET_USE_EMBEDDED_CLIENT = 'SET_USE_EMBEDDED_CLIENT';

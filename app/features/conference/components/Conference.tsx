@@ -26,6 +26,7 @@ interface IProps {
     _disableAGC?: boolean;
     _serverTimeout?: number;
     _serverURL?: string;
+    _useEmbeddedClient?: boolean;
     conference: IConference;
     dispatch: Dispatch;
 }
@@ -42,6 +43,7 @@ class Conference extends Component<IProps, IConferenceState> {
     _api?: JitsiMeetExternalAPI;
     _conference!: { room: string; serverURL: string; };
     _iframeLoaded?: boolean;
+    _loadId = 0;
 
     /**
      * Initializes a new {@code Conference} instance.
@@ -77,9 +79,7 @@ class Conference extends Component<IProps, IConferenceState> {
             serverURL
         };
 
-        this._loadConference();
-
-
+        this._loadConference().catch(error => console.error('Loading the conference failed', error));
     }
 
     /**
@@ -88,6 +88,8 @@ class Conference extends Component<IProps, IConferenceState> {
      * @returns {void}
      */
     componentWillUnmount() {
+        // Abandon a load that is still waiting for the embedded client server.
+        this._loadId++;
 
         if (this._api) {
             this._api.dispose();
@@ -131,9 +133,10 @@ class Conference extends Component<IProps, IConferenceState> {
      * Load the conference by creating the iframe element in this component
      * and attaching utils from jitsi-meet-electron-utils.
      *
-     * @returns {void}
+     * @returns {Promise<void>}
      */
-    _loadConference() {
+    async _loadConference() {
+        const loadId = this._loadId;
         const appProtocolSurplus = `${config.appProtocolPrefix}://`;
 
         // replace the custom url with https, otherwise new URL() raises 'Invalid URL'.
@@ -142,7 +145,23 @@ class Conference extends Component<IProps, IConferenceState> {
         }
         const url = new URL(this._conference.room, this._conference.serverURL);
         const roomName = url.pathname.split('/').pop();
-        const host = this._conference.serverURL.replace(/https?:\/\//, '');
+        let host = this._conference.serverURL.replace(/https?:\/\//, '');
+        let embeddedOrigin: string | undefined;
+
+        if (this.props._useEmbeddedClient) {
+            // The meeting then loads from a local server that serves the bundled (patched) web
+            // client and proxies everything else to the real server, whose URL stays what the
+            // user sees and what the recent list keeps.
+            embeddedOrigin = await this._resolveEmbeddedOrigin(this._conference.serverURL);
+
+            if (loadId !== this._loadId) {
+                return;
+            }
+            if (embeddedOrigin) {
+                // Keep a tenant path (https://server/tenant) of the real server.
+                host = embeddedOrigin + new URL(this._conference.serverURL).pathname.replace(/\/+$/, '');
+            }
+        }
         const searchParameters = Object.fromEntries(url.searchParams);
         const hashParameters = parseURLParams(url);
 
@@ -217,7 +236,25 @@ class Conference extends Component<IProps, IConferenceState> {
             setupPictureInPictureRender(this._api);
         }
         setupPowerMonitorRender(this._api);
-        setupMultitrackRecordingRender(this._api);
+        setupMultitrackRecordingRender(this._api, embeddedOrigin);
+    }
+
+    /**
+     * Asks the main process for the embedded client server of the given Jitsi server.
+     *
+     * @param {string} serverURL - The real server URL.
+     * @returns {Promise<string|undefined>} The embedded origin, or undefined to load the server's client.
+     */
+    async _resolveEmbeddedOrigin(serverURL: string): Promise<string | undefined> {
+        try {
+            const result = await window.jitsiElectronApp.embeddedClient.resolve(serverURL);
+
+            return result?.origin;
+        } catch (error) {
+            console.warn('Embedded client unavailable, using the server client', error);
+
+            return undefined;
+        }
     }
 
     /**
@@ -280,6 +317,7 @@ function _mapStateToProps(state: IState) {
         _alwaysOnTopWindowEnabled: getSetting(state, 'alwaysOnTopWindowEnabled', true),
         _disableAGC: state.settings.disableAGC,
         _serverURL: state.settings.serverURL,
+        _useEmbeddedClient: getSetting(state, 'useEmbeddedClient', true),
         _serverTimeout: state.settings.serverTimeout
     };
 }

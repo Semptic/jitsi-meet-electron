@@ -7,7 +7,8 @@ import {
     SET_ALWAYS_ON_TOP_WINDOW_ENABLED,
     SET_DISABLE_AGC,
     SET_SERVER_TIMEOUT,
-    SET_SERVER_URL
+    SET_SERVER_URL,
+    SET_USE_EMBEDDED_CLIENT
 } from './actionTypes';
 
 
@@ -15,7 +16,8 @@ const DEFAULT_STATE: ISettingsState = {
     alwaysOnTopWindowEnabled: true,
     disableAGC: false,
     serverURL: undefined,
-    serverTimeout: undefined
+    serverTimeout: undefined,
+    useEmbeddedClient: true
 };
 
 /**
@@ -49,6 +51,12 @@ export default (state: ISettingsState = DEFAULT_STATE, action: AnyAction): ISett
         return {
             ...state,
             serverTimeout: action.serverTimeout
+        };
+
+    case SET_USE_EMBEDDED_CLIENT:
+        return {
+            ...state,
+            useEmbeddedClient: action.useEmbeddedClient
         };
 
     default:

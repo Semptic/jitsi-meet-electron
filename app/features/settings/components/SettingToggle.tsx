@@ -8,6 +8,7 @@ import type { ISettingsState, IState } from '../../../types';
 import ToggleWithLabel from './ToggleWithLabel';
 
 interface IProps {
+    defaultValue?: boolean;
     dispatch: Dispatch;
     label?: string;
     settingChangeEvent?: (value: boolean) => AnyAction;
@@ -22,9 +23,11 @@ interface IProps {
  * @param {Object} ownProps - The props of the redux wrapper component.
  * @returns {Object} A props object including the current value of the setting.
  */
-const mapStateToProps = (state: IState, ownProps: { settingName: keyof ISettingsState; }) => {
+const mapStateToProps = (
+        state: IState, ownProps: { defaultValue?: boolean; settingName: keyof ISettingsState; }) => {
     return {
-        value: state.settings[ownProps.settingName] as boolean,
+        // The persisted settings of an older version lack newer keys: fall back to the default.
+        value: (state.settings[ownProps.settingName] ?? ownProps.defaultValue) as boolean,
         ...ownProps
     };
 };

@@ -8,7 +8,7 @@ import styled from 'styled-components';
 import { DrawerContainer, Logo, closeDrawer } from '../../navbar';
 import { ArrowLeftIcon } from '../../shared/icons';
 import {
-    setDisableAGC, setWindowAlwaysOnTop
+    setDisableAGC, setUseEmbeddedClient, setWindowAlwaysOnTop
 } from '../actions';
 import { SettingsContainer, TogglesContainer } from '../styled';
 
@@ -116,6 +116,11 @@ class SettingsDrawer extends Component<IProps> {
                                 label = { t('settings.disableAGC') }
                                 settingChangeEvent = { setDisableAGC }
                                 settingName = 'disableAGC' />
+                            <SettingToggle
+                                defaultValue = { true }
+                                label = { t('settings.useEmbeddedClient') }
+                                settingChangeEvent = { setUseEmbeddedClient }
+                                settingName = 'useEmbeddedClient' />
                         </TogglesContainer>
                     </SettingsContainer>
                 </DrawerContainer>

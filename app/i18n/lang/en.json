@@ -16,7 +16,8 @@
 		"invalidServerTimeout": "Invalid value for Server Timeout",
 		"serverUrl": "Server URL",
 		"serverTimeout": "Server Timeout (in seconds)",
-		"disableAGC": "Disable automatic gain control"
+		"disableAGC": "Disable automatic gain control",
+		"useEmbeddedClient": "Use embedded client (per-participant recording)"
 	},
 	"remoteControl": {
 		"message": "Allow remote control of this computer?",

@@ -1,4 +1,13 @@
 
+// Values injected at build time by esbuild (see esbuild.js); empty means "use the default".
+// They let a fork build (scripts/package-multitrack.mjs) change its identity and
+// defaults without touching the upstream defaults below.
+const buildAppName = process.env.JITSI_BUILD_APP_NAME;
+const buildAppId = process.env.JITSI_BUILD_APP_ID;
+const buildProtocol = process.env.JITSI_BUILD_PROTOCOL;
+const buildServerURL = process.env.JITSI_BUILD_DEFAULT_SERVER_URL;
+const buildDisableUpdates = process.env.JITSI_BUILD_DISABLE_UPDATES;
+
 export default {
     /**
      * The URL with extra information about the app / service.
@@ -13,18 +22,28 @@ export default {
     /**
      * Application name.
      */
-    appName: 'Jitsi Meet',
+    appName: buildAppName || 'Jitsi Meet',
+
+    /**
+     * Application id (also used by the screen sharing permission handling).
+     */
+    appId: buildAppId || 'org.jitsi.jitsi-meet',
+
+    /**
+     * Whether the app checks for updates (off in local fork builds).
+     */
+    updatesEnabled: buildDisableUpdates !== 'true',
 
     /**
     * The prefix for application protocol.
     * You will also need to replace this in package.json.
     */
-    appProtocolPrefix: 'jitsi-meet',
+    appProtocolPrefix: buildProtocol || 'jitsi-meet',
 
     /**
      * The default server URL of Jitsi Meet Deployment that will be used.
      */
-    defaultServerURL: 'https://meet.jit.si',
+    defaultServerURL: buildServerURL || 'https://meet.jit.si',
 
     /**
      * The default server Timeout in seconds.

@@ -5,6 +5,9 @@ export {};
  * ({@code app/preload/preload.ts}).
  */
 interface IJitsiElectronApp {
+    embeddedClient: {
+        resolve(serverURL: string): Promise<{ origin: string; } | null>;
+    };
     ipc: {
         addListener(channel: string, listener: (...args: any[]) => void): (() => void) | undefined;
         send(channel: string, ...args: any[]): void;

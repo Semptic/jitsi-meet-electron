@@ -27,6 +27,9 @@ const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
 
+const electronVersion = require('./package.json').devDependencies.electron.replace(/^\D*/, '');
+const { patchExternalApi } = require('./scripts/patchExternalApi');
+
 const flags = process.argv.slice(2).filter(a => a.startsWith('--'));
 const targets = process.argv.slice(2).filter(a => !a.startsWith('--'));
 
@@ -37,7 +40,6 @@ const buildTargets = targets.length ? targets : [ 'main', 'preload', 'renderer' 
 
 const OUTDIR = 'build';
 
-const electronVersion = require('./package.json').devDependencies.electron.replace(/^\D*/, '');
 
 /**
  * Resolves the Chromium major version that the given electron version ships,
@@ -110,7 +112,9 @@ const svgrPlugin = {
 /**
  * esbuild plugin that keeps the vendored, pre-bundled external_api.js usable.
  * It strips the dangling sourceMappingURL comment (the .map is not shipped),
- * standing in for webpack's `noParse` handling of that file.
+ * standing in for webpack's `noParse` handling of that file, and lets the iframe
+ * URL keep `http://127.0.0.1:<port>` for the embedded client server
+ * (scripts/patchExternalApi.js).
  */
 const externalApiPlugin = {
     name: 'external-api',
@@ -119,7 +123,7 @@ const externalApiPlugin = {
             const code = await fs.promises.readFile(args.path, 'utf8');
 
             return {
-                contents: code.replace(/\/\/# sourceMappingURL=.*$/m, ''),
+                contents: patchExternalApi(code.replace(/\/\/# sourceMappingURL=.*$/m, '')),
                 loader: 'js'
             };
         });
@@ -167,7 +171,17 @@ const common = {
     // webpack's `mode` injected this into both bundles via DefinePlugin; do the
     // same so bundled dependencies (in either process) see the build-time value.
     define: {
-        'process.env.NODE_ENV': JSON.stringify(mode)
+        'process.env.NODE_ENV': JSON.stringify(mode),
+
+        // Identity and defaults of a fork build (scripts/package-multitrack.mjs); empty
+        // for the regular build. Read at build time only, never from the runtime environment.
+        ...Object.fromEntries([
+            'JITSI_BUILD_APP_NAME',
+            'JITSI_BUILD_APP_ID',
+            'JITSI_BUILD_PROTOCOL',
+            'JITSI_BUILD_DEFAULT_SERVER_URL',
+            'JITSI_BUILD_DISABLE_UPDATES'
+        ].map(name => [ `process.env.${name}`, JSON.stringify(process.env[name] ?? '') ]))
     }
 };
 

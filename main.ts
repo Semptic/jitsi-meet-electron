@@ -24,10 +24,11 @@ import * as path from 'path';
 import * as URL from 'url';
 
 import config from './app/features/config';
+import { LOOPBACK_HOST } from './app/features/embedded-client/constants';
+import { setupEmbeddedClientMain } from './app/features/embedded-client/main';
 import { setupMultitrackRecordingMain } from './app/features/multitrack-recording/main';
 import { openExternalLink } from './app/features/utils/openExternalLink';
 import { t } from './app/i18n/main';
-import pkgJson from './package.json';
 
 // This file is bundled to ./build/main.js, so under esbuild __dirname is the
 // build/ directory and its parent is the application root holding build/ and
@@ -35,6 +36,10 @@ import pkgJson from './package.json';
 // directly for app paths: the previous webpack build neutralised __dirname via
 // `node: { __dirname: true }`, so this indirection replaces that behaviour.
 const rootDir = path.resolve(__dirname, '..');
+
+// The patched web client is shipped as an extraResource of the packaged app
+// (see electron-builder.multitrack.cjs) and lives in ./client-bundle in development.
+const clientBundleDir = isDev ? path.join(rootDir, 'client-bundle') : path.join(process.resourcesPath, 'client');
 
 const showDevTools = Boolean(process.env.SHOW_DEV_TOOLS) || (process.argv.indexOf('--show-dev-tools') > -1);
 
@@ -121,6 +126,16 @@ let meetingWindow: BrowserWindow | null = null;
 
 
 let webrtcInternalsWindow: BrowserWindow | null = null;
+
+/**
+ * Serves the bundled web client to the meeting window and proxies the rest to
+ * the Jitsi server (see docs/embedded-client.md).
+ */
+const embeddedClient = setupEmbeddedClientMain({
+    bundleDir: clientBundleDir,
+    getMeetingWindow: () => meetingWindow,
+    userDataPath: app.getPath('userData')
+});
 
 /**
  * Add protocol data
@@ -211,8 +226,8 @@ function createJitsiMeetWindow() {
     // Application menu.
     setApplicationMenu();
 
-    // Check for Updates.
-    if (!process.mas) {
+    // Check for Updates (not in local fork builds, which have no update feed).
+    if (!process.mas && config.updatesEnabled) {
         autoUpdater.checkForUpdatesAndNotify();
     }
 
@@ -262,12 +277,20 @@ function createJitsiMeetWindow() {
         mainWindow.webContents.session.clearCache();
     }
 
-    // Block access to file:// URLs.
-    const fileFilter = {
-        urls: [ 'file://*' ]
+    // One listener per event: Electron keeps only the last one registered on a session.
+    // Block access to file:// URLs and give the meeting window's requests to its
+    // embedded client server the per-launch token.
+    const requestFilter = {
+        urls: [ 'file://*', `http://${LOOPBACK_HOST}:*/*`, `ws://${LOOPBACK_HOST}:*/*` ]
     };
 
-    mainWindow.webContents.session.webRequest.onBeforeSendHeaders(fileFilter, (details, callback) => {
+    mainWindow.webContents.session.webRequest.onBeforeSendHeaders(requestFilter, (details, callback) => {
+        if (!details.url.startsWith('file:')) {
+            callback({ requestHeaders: embeddedClient.addToken(details) ?? details.requestHeaders });
+
+            return;
+        }
+
         const requestedPath = path.resolve(URL.fileURLToPath(details.url));
         const appBasePath = path.resolve(basePath);
 
@@ -329,7 +352,9 @@ function createJitsiMeetWindow() {
     });
 
     // Block opening any external applications.
-    mainWindow.webContents.session.setPermissionRequestHandler((_, permission, callback, details) => {
+    // Pages on the loopback interface are trusted only when they are the embedded
+    // client of the meeting window: no other local page may get camera or microphone.
+    mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details) => {
         if (permission === 'openExternal') {
             console.warn(`Disallowing opening ${(details as { externalURL?: string; }).externalURL}`);
             callback(false);
@@ -337,7 +362,9 @@ function createJitsiMeetWindow() {
             return;
         }
 
-        callback(true);
+        const loopbackVerdict = embeddedClient.decidesLoopbackPermission(details.requestingUrl, webContents.id);
+
+        callback(loopbackVerdict ?? true);
     });
 
     // NOTE: Popups configuration and SDK handlers are set up on the
@@ -475,6 +502,10 @@ app.on('second-instance', (event, commandLine) => {
 
 app.on('window-all-closed', () => {
     app.quit();
+});
+
+app.on('will-quit', () => {
+    embeddedClient.close();
 });
 
 // remove so we can register each time as we run the app.
@@ -638,7 +669,7 @@ ipcMain.on('open-meeting-window', (event, conference) => {
     setupPictureInPictureMain(meetingWindow);
     setupPowerMonitorMain(meetingWindow);
     setupMultitrackRecordingMain(meetingWindow);
-    setupScreenSharingMain(meetingWindow, config.appName, pkgJson.build.appId);
+    setupScreenSharingMain(meetingWindow, config.appName, config.appId);
     setupRemoteControlMain(meetingWindow, { requestConsent: requestRemoteControlConsent });
 
     // Block redirects — same protection as the launcher window.

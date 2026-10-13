@@ -34,6 +34,16 @@ const multitrack = {
 };
 
 /**
+ * Embedded web client: asks the main process for the origin of the local server
+ * that serves the bundled client for a Jitsi server (null when it is unavailable).
+ * The channel name is inlined, like the multitrack ones.
+ */
+const embeddedClient = {
+    resolve: (serverURL: string): Promise<{ origin: string; } | null> =>
+        ipcRenderer.invoke('embedded-client:resolve', serverURL)
+};
+
+/**
  * Open an external URL.
  *
  * @param {string} url - The URL we with to open.
@@ -49,6 +59,7 @@ function openExternalLink(url: string): void {
 // return), which contextBridge supports, so it works under contextIsolation.
 contextBridge.exposeInMainWorld('jitsiElectronApp', {
     openExternalLink,
+    embeddedClient,
     multitrack,
     ipc: {
         addListener: (channel: string, listener: (...args: any[]) => void) => {

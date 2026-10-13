@@ -55,11 +55,31 @@ async function execute(method: MultitrackMethod, params: Record<string, unknown>
  * come from the iframe's own window AND from the origin it was loaded from are
  * honoured; everything else is ignored.
  *
+ * When the meeting loads from the embedded client server, `trustedOrigin` is that
+ * server's origin and the iframe must be on exactly that origin; the bridge is
+ * otherwise inert. Without it the origin of the iframe URL is used as before.
+ *
  * @param {JitsiMeetExternalAPI} api - The iframe API object.
+ * @param {string} trustedOrigin - The only origin allowed to use the bridge, if known.
  * @returns {void}
  */
-export function setupMultitrackRecordingRender(api: JitsiMeetExternalAPI) {
+export function setupMultitrackRecordingRender(api: JitsiMeetExternalAPI, trustedOrigin?: string) {
     const iframe: HTMLIFrameElement = api.getIFrame();
+
+    /**
+     * The origin of the iframe's page that may use the bridge (null: nobody).
+     *
+     * @returns {string|null}
+     */
+    const getIframeOrigin = (): string | null => {
+        try {
+            const origin = new URL(iframe.src).origin;
+
+            return trustedOrigin && origin !== trustedOrigin ? null : origin;
+        } catch {
+            return null;
+        }
+    };
 
     const onMessage = async (event: MessageEvent) => {
         const data = event.data as IRequest | null;
@@ -69,14 +89,7 @@ export function setupMultitrackRecordingRender(api: JitsiMeetExternalAPI) {
             return;
         }
 
-        let expectedOrigin: string;
-
-        try {
-            expectedOrigin = new URL(iframe.src).origin;
-        } catch {
-            return;
-        }
-        if (event.origin !== expectedOrigin) {
+        if (event.origin !== getIframeOrigin()) {
             return;
         }
 
@@ -104,12 +117,18 @@ export function setupMultitrackRecordingRender(api: JitsiMeetExternalAPI) {
     window.addEventListener('message', onMessage);
 
     const announce = () => {
+        const origin = getIframeOrigin();
+
+        if (!origin) {
+            return;
+        }
+
         iframe.contentWindow?.postMessage(
             { scope: MULTITRACK_SCOPE,
                 type: 'event',
                 name: 'supported',
                 version: MULTITRACK_PROTOCOL_VERSION },
-            new URL(iframe.src).origin
+            origin
         );
     };
 

@@ -33,6 +33,7 @@ export interface ISettingsState {
     disableAGC: boolean;
     serverTimeout?: number;
     serverURL?: string;
+    useEmbeddedClient?: boolean;
 }
 
 /**
