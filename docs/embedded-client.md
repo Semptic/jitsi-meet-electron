@@ -15,7 +15,7 @@ to the regular **Jitsi Meet** and leaves it untouched.
 meeting window (file://, preload)        main process
   Conference.tsx
     1. embeddedClient.resolve(serverURL) ──► EmbeddedClientManager
-    2. iframe src = http://127.0.0.1:<port>/<room>      │  one listener per upstream origin
+    2. iframe src = http://<hash>.localhost:<port>/<room>      │  one listener per upstream origin
                                                          ▼
   iframe  ── GET /libs/app.bundle.min.js ──►  bundled client (Resources/client)   [static]
           ── GET /<room>, /config.js, ...  ──►  proxy ──► https://<jitsi server>   [proxied]
@@ -72,23 +72,36 @@ would need its `config.js` to use relative URLs. Bodies are never rewritten.
 
 The server is not a general proxy. It enforces, for every request and WebSocket handshake:
 
-1. **Loopback only.** It listens on `127.0.0.1` (never `0.0.0.0`/`::`), plain http (a
-   secure context for `getUserMedia`, AudioWorklet and OPFS), on a stable ephemeral port.
+1. **Loopback only, one host per upstream.** It listens on `127.0.0.1` (never `0.0.0.0`/`::`), plain
+   http, on an ephemeral port. The web origin is `http://<hash>.localhost:<port>` where `<hash>` is the
+   first 16 hex digits of SHA-256 of the upstream origin. Chromium resolves `*.localhost` to loopback
+   and treats it as a secure context (verified in the built app: `getUserMedia`, OPFS, `localStorage`,
+   AudioWorklet and Workers work). Cookies, `localStorage`, IndexedDB and OPFS are scoped per host, so an
+   upstream can never see another upstream's cookies or storage, and an origin that one upstream used can
+   never be taken over by another upstream when ports are reused (the host differs; tested).
 2. **Fixed forwarding target.** Each server forwards to exactly one origin, the one it was
    created for. The request target must be origin-form (`/path`): absolute-form
    (`GET http://other/`), `//host/path`, and `CONNECT` are refused, so the `Host` or target
-   of a request never selects where it goes. The upstream must be `https` and not a loopback
-   or `localhost` name (no self-loop, no SSRF into local services); TLS is verified
-   (`secure: true`); redirects are not followed by the proxy.
-3. **Host check** (DNS rebinding): the `Host` header must be exactly `127.0.0.1:<port>`.
+   of a request never selects where it goes. The upstream must be `https` on a public address:
+   loopback (`localhost`, `*.localhost`, 127/8, `::1`, `0.0.0.0`), private (10/8, 172.16/12, 192.168/16),
+   link-local (169.254/16, fe80::/10), CGNAT, unique local (fc00::/7) and IPv4-mapped forms of these are
+   refused, with or without trailing dots, and the proxy's outgoing connections go through a DNS guard
+   that rejects any name resolving to such an address. There is no exception or flag in the app.
+   TLS is verified (`secure: true`); redirects are not followed by the proxy.
+3. **Host check** (DNS rebinding): the `Host` header must be exactly `<hash>.localhost:<port>` (case-insensitive); `127.0.0.1`, `localhost`, a missing port and any other name are refused.
 4. **Origin check:** WebSocket handshakes must carry the server's own `Origin`; other
    requests may omit it but a present `Origin` must match. Upstream always sees its own
    `Origin`/`Referer`/`Host`.
 5. **Per-launch secret.** Every request, static ones included, must carry the header
    `x-jitsi-embedded-token` (32 random bytes, regenerated each launch, compared in constant
-   time). The main process adds it in the single `webRequest.onBeforeSendHeaders` listener
-   of the session, only for requests of the **meeting window's webContents** to the
-   embedded origins (http and ws). Page JavaScript cannot read it; other local programs and
+   time; duplicated headers never match). The main process adds it in the single
+   `webRequest.onBeforeSendHeaders` listener of the session, only for requests of the **meeting
+   window's webContents** to the embedded origins (http and ws), and only when they come from the
+   embedded origin itself (Origin/Referer/initiator) or are the app page's iframe navigation (an iframe
+   navigation without Referer; Electron reports no initiating frame for navigations). A third-party frame
+   inside the page gets none. Residual: a third-party frame with `Referrer-Policy: no-referrer` navigating
+   to the embedded origin would have its document request authorised; it still cannot read the token or
+   the cross-origin content. Page JavaScript cannot read it; other local programs and
    browser pages cannot use the server. It is removed before forwarding upstream.
 6. **No forwarded identity.** Incoming `Forwarded` / `X-Forwarded-*` / `X-Real-IP` are
    dropped and none are added (an upstream trusting `X-Forwarded-Proto: http` would
@@ -97,10 +110,15 @@ The server is not a general proxy. It enforces, for every request and WebSocket 
    contains `..`/`.` segments, NUL, backslashes or ends in `/`; the resolved real path
    (symlinks resolved) must stay inside the bundle; only regular files; no directory listing;
    `X-Content-Type-Options: nosniff`.
-8. **Cookies:** cookies are not scoped by port, so upstream cookies are stored under a
-   per-upstream name prefix (`Domain` removed) and only that upstream's cookies are sent
-   back; one Jitsi server never receives another's cookies.
-9. **Logging:** only lifecycle and `proxy error <code>` lines are written to the log file.
+8. **Cookies:** the `Domain` attribute is dropped (it names the upstream, never the embedded
+   host), so cookies are host-only on the per-upstream host; names, hence `__Host-` / `__Secure-`
+   semantics, are unchanged.
+9. **Timeouts and limits:** HTTP header / request timeouts of 30 s / 120 s on the server and a
+   120 s upstream response timeout (long polling answers within about a minute); WebSockets are not
+   subject to them. Static serving also refuses any path segment starting with `.`. Remembered ports
+   (`embedded-client-ports.json`, mode 600) hold only the host hash and the port, the 20 most recently
+   used upstreams.
+10. **Logging:** only lifecycle and `proxy error <code>` lines are written to the log file.
    Request paths, queries (room names, JWTs), hosts and headers are never logged.
 
 Places that trust the iframe origin, all restricted to the embedded origin of the meeting:
@@ -109,9 +127,11 @@ Places that trust the iframe origin, all restricted to the embedded origin of th
   must equal it exactly; otherwise the bridge ignores the iframe. (The main-process side
   never trusted the iframe origin: IPC is accepted only from the meeting window's main
   frame, and file names/folders are validated there.)
-- `main.ts` permission handler: a permission request from a loopback page is granted only
-  if it is an embedded origin loaded by the meeting window; other loopback pages are denied.
-  (Non-loopback behaviour is unchanged.)
+- `main.ts` permission request and check handlers: a request from a loopback page (one shared
+  `isLoopback`: localhost, `*.localhost`, 127/8, `::1`, `0.0.0.0`, ...) is granted only if it is an embedded
+  origin loaded by the meeting window; other loopback pages are denied. (Non-loopback behaviour is
+  unchanged.) The decisions are pure functions in `trust.ts`, unit tested, as is the IPC sender check
+  (main frame of the expected window, loaded from `file://`) used by the resolve channel and the bridge.
 - `embedded-client:resolve` IPC: only the app page (`file://`, main frame) of the meeting window.
 - `main.ts` `onBeforeSendHeaders` / `onHeadersReceived` are single listeners (Electron keeps
   only the last per session): file URL blocking, token injection, and the X-Frame-Options /
@@ -137,7 +157,14 @@ The identity lives in `electron-builder.multitrack.cjs` plus build-time constant
 (`JITSI_BUILD_*`, set by `scripts/package-multitrack.mjs`, compiled in by `esbuild.js`).
 `npm start` and `npm run dist` are unchanged. The app is ad-hoc signed (`identity: '-'`,
 hardened runtime off because ad-hoc signed frameworks cannot pass library validation);
-it is not notarized. It ships the camera / microphone usage strings, so macOS asks for
+it is not notarized. Electron fuses are flipped by electron-builder before signing:
+`RunAsNode`, `EnableNodeOptionsEnvironmentVariable` and `EnableNodeCliInspectArguments` off,
+`OnlyLoadAppFromAsar` and `EnableEmbeddedAsarIntegrityValidation` on (the app starts and the signature
+verifies; `npx @electron/fuses read --app <app>` shows them). No entitlement weakening library validation
+is added (hardened runtime is off instead, see above). Remaining risk: an ad-hoc signature has no
+team identity, so macOS cannot tell this build from a tampered one, and without the hardened runtime
+`DYLD_INSERT_LIBRARIES` can still inject code into the app process; anything that can do that already
+runs as you. It ships the camera / microphone usage strings, so macOS asks for
 permission on first use (it is a new app to macOS).
 
 ## Build, install, update
